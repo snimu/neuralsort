@@ -23,6 +23,12 @@ Since ANNs are function-approximators, a precise sorting of number using only on
 		- Output: equally large list of real numbers indicating the index that the corresponding input-number should belong to.
 	- Make output into a list -> give list to sorting algorithm
 		- Learn about sorting algorithms: which ones benefit from plausibly achievable pre-sorting? What are their performance characteristics?
+	- Activation function:
+		- Appy `ReLU`: allows neural network to just assign negative numbers to small inputs for easy pre-sorting.
+		- Apply `torch.where(x > list_len, list_len - 1, x)`: allows layer to assign a very large index to large numbers for easy pre-sorting.
+		- Both of the above might be especially useful for a transformer which sees the whole list and might just push large numbers in one direction and small ones in the other.
+- Turning approximate indices into actual, usable ones
+	- This might require sorting which would make the whole exercise infinitely recursive.
 - The loss function. 
 	- Several possibilities:
 		- Distance of output from correct ordering -> endorse closeness to acutal index.
@@ -31,3 +37,13 @@ Since ANNs are function-approximators, a precise sorting of number using only on
 			- Or use the total count: in some cases, it might be beneficial to pre-sort some number in such a way as to have them be moved often afterwards, if it means that the other numbers have to be moved rarely. This shouldn't be discouraged too strongly. 
 			- A combination of both might be used (but too many losses aren't good, either) -> think about this some more.
 	- Use some combination of them.
+- End-to-end training
+	- Two possibilities:
+		1. A simple `Sequential` multi-layered network that changes the numbers into  indices
+		2. Many single-layered nets that each see the actual list that is to be sorted. 
+	- To elaborate on number 2:
+		- Create an `Index`-class which inherits from `Module`.
+			- `forward`: transforms the approximate indices of the previous layer into precice indices and outputs the corresponding list as an input to the next layer.
+				
+				- 
+			- `backward`: Takes gradient of known length and reorders it in the reverse direction of the forward reordering of the list.
