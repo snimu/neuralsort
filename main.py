@@ -35,7 +35,7 @@ class SortNet(nn.Module):
 
 
 def generate_dataset(length, min_val, max_val, size, device):
-    unsorted_tensor = torch.randint(min_val, max_val, (size, length, 1), device=device)
+    unsorted_tensor = torch.randint(min_val, max_val, (size, length), device=device)
     sorted_tensor = torch.sort(unsorted_tensor, dim=1)[0]
     return unsorted_tensor, sorted_tensor
 
