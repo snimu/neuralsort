@@ -34,8 +34,8 @@ class SortNet(nn.Module):
             return x.permute(1, 0, 2)
 
 
-def generate_dataset(length, min_val, max_val, size):
-    unsorted_tensor = torch.randint(min_val, max_val, (size, length, 1))
+def generate_dataset(length, min_val, max_val, size, device):
+    unsorted_tensor = torch.randint(min_val, max_val, (size, length, 1), device=device)
     sorted_tensor = torch.sort(unsorted_tensor, dim=1)[0]
     return unsorted_tensor, sorted_tensor
 
@@ -51,6 +51,7 @@ def training_loop(
         max_val,
         batch_size,
         loop: tqdm,
+        device,
 ):
     metrics = {"epoch": [], "train_loss": [], "valid_loss": [], "train_accuracy": [], "valid_accuracy": []}
     loop.write(
@@ -69,7 +70,7 @@ def training_loop(
 
             running_loss = 0.0
             running_corrects = 0
-            inputs, labels = generate_dataset(length, min_val, max_val, batch_size)
+            inputs, labels = generate_dataset(length, min_val, max_val, batch_size, device)
             optimizer.zero_grad()
             with torch.set_grad_enabled(phase == 'train'):
                 outputs = model(inputs.float())
@@ -131,13 +132,16 @@ if __name__ == "__main__":
     parser.add_argument('--max_val', nargs='+', type=int, default=[100])
     parser.add_argument('--length', nargs='+', type=int, default=[10])
     parser.add_argument('--num_epochs', nargs='+', type=int, default=[100])
-    parser.add_argument('--use_fc', type=bool, default=False)
+    parser.add_argument('--use_fc', type=bool, default=True)
     parser.add_argument('--num_layers', nargs='+', type=int, default=[1])
-    parser.add_argument('-p', '--plot', action='store_true', help='Plot training metrics')
-    parser.add_argument('-s', '--save_plot', action='store_true', help='Save plot instead of showing')
+    parser.add_argument('-p', '--plot', action='store_true', help="Plot the metrics")
+    parser.add_argument('-s', '--save_plot', action='store_true', help="Save the plot")
 
     args = parser.parse_args()
     all_values = list(itertools.product(args.min_val, args.max_val, args.length, args.num_epochs, args.num_layers))
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     loop = tqdm(
         all_values,
         total=len(args.min_val) * len(args.max_val) * len(args.length) * len(args.num_epochs) * len(args.num_layers)
@@ -147,7 +151,7 @@ if __name__ == "__main__":
         input_dim = output_dim = length
         num_heads = 1
         batch_size = 128
-        model = SortNet(input_dim, output_dim, num_heads, num_layers, args.use_fc)
+        model = SortNet(input_dim, output_dim, num_heads, num_layers, args.use_fc).to(device)
         loss_fn = nn.MSELoss()
         optimizer = optim.Adam(model.parameters())
         scheduler = StepLR(optimizer, step_size=7, gamma=0.1)
@@ -162,6 +166,7 @@ if __name__ == "__main__":
             max_val,
             batch_size,
             loop,
+            device,
         )
         if args.plot:
             plot_metrics(df, min_val, max_val, length, num_epochs, args.use_fc, args.save_plot)
