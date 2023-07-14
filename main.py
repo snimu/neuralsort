@@ -10,13 +10,33 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
+class SelfAttention(nn.Module):
+    """Self attention layer.
+    Want it to work with lists, don't want to use nn.MultiheadAttention
+    because of issues with shapes.
+    """
+    def __init__(self, dim):
+        super(SelfAttention, self).__init__()
+        self.query = nn.Linear(dim, dim)
+        self.key = nn.Linear(dim, dim)
+        self.value = nn.Linear(dim, dim)
+
+    def forward(self, x):
+        Q = self.query(x)
+        K = self.key(x)
+        V = self.value(x)
+
+        attention_weights = torch.softmax(Q @ K.transpose(-2, -1) / (self.dim ** 0.5), dim=-1)
+        return attention_weights @ V
+
+
 class SortNet(nn.Module):
-    def __init__(self, input_dim, output_dim, num_heads, num_layers, use_fc):
+    def __init__(self, input_dim, output_dim, num_layers, use_fc):
         super(SortNet, self).__init__()
         self.use_fc = use_fc
         self.layers = nn.Sequential(
             *[
-                nn.MultiheadAttention(input_dim, num_heads)
+                SelfAttention(input_dim)
                 for _ in range(num_layers)
             ]
         )
@@ -24,19 +44,20 @@ class SortNet(nn.Module):
             self.fc = nn.Linear(input_dim, output_dim)
 
     def forward(self, x):
-        x = x.permute(1, 0, 2)  # MHA requires (seq_len, batch, feature)
+        x = x.permute(1, 0, 2)  # SelfAttention requires (seq_len, batch, feature)
         for layer in self.layers:
-            x, _ = layer(x, x, x)
+            x = layer(x)
+        x = x.permute(1, 0, 2)  # Return to original (batch, seq_len, feature)
         if self.use_fc:
             output = self.fc(x)
-            return output.permute(1, 0, 2)  # Return to original (batch, seq_len, feature)
+            return output
         else:
-            return x.permute(1, 0, 2)
+            return x
 
 
-def generate_dataset(length, min_val, max_val, size, device):
-    unsorted_tensor = torch.randint(min_val, max_val, (size, length), device=device)
-    sorted_tensor = torch.sort(unsorted_tensor, dim=1)[0]
+def generate_dataset(length, min_val, max_val, batch_size, device):
+    unsorted_tensor = torch.randint(min_val, max_val, (batch_size, 1, length), device=device)
+    sorted_tensor = torch.sort(unsorted_tensor, dim=2)[0]
     return unsorted_tensor, sorted_tensor
 
 
@@ -151,7 +172,7 @@ if __name__ == "__main__":
         input_dim = output_dim = length
         num_heads = 1
         batch_size = 128
-        model = SortNet(input_dim, output_dim, num_heads, num_layers, args.use_fc).to(device)
+        model = SortNet(input_dim, output_dim, num_layers, args.use_fc).to(device)
         loss_fn = nn.MSELoss()
         optimizer = optim.Adam(model.parameters())
         scheduler = StepLR(optimizer, step_size=7, gamma=0.1)
