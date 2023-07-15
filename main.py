@@ -31,6 +31,9 @@ class SelfAttention(nn.Module):
 
 
 class SortNet(nn.Module):
+    # TODO: If use_fc, use Linear layer after every SelfAttention layer
+    # TODO: Try using an activation function;
+    #   - has to be able to handle negative values -> nn.LearkyReLU()?
     def __init__(self, input_dim, output_dim, num_layers, use_fc, use_residual):
         super(SortNet, self).__init__()
         self.use_fc = use_fc
