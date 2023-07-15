@@ -31,9 +31,10 @@ class SelfAttention(nn.Module):
 
 
 class SortNet(nn.Module):
-    def __init__(self, input_dim, output_dim, num_layers, use_fc):
+    def __init__(self, input_dim, output_dim, num_layers, use_fc, use_residual):
         super(SortNet, self).__init__()
         self.use_fc = use_fc
+        self.use_residual = use_residual
         self.layers = nn.Sequential(
             *[
                 SelfAttention(input_dim)
@@ -46,10 +47,10 @@ class SortNet(nn.Module):
     def forward(self, x):
         x = x.permute(1, 0, 2)  # SelfAttention requires (seq_len, batch, feature)
         for layer in self.layers:
-            x = layer(x)
+            x = x + layer(x) if self.use_residual else layer(x)
         x = x.permute(1, 0, 2)  # Return to original (batch, seq_len, feature)
         if self.use_fc:
-            output = self.fc(x)
+            output = x + self.fc(x) if self.use_residual else self.fc(x)
             return output
         else:
             return x
@@ -153,8 +154,9 @@ if __name__ == "__main__":
     parser.add_argument('--max_val', nargs='+', type=int, default=[100])
     parser.add_argument('--length', nargs='+', type=int, default=[10])
     parser.add_argument('--num_epochs', nargs='+', type=int, default=[100])
-    parser.add_argument('--use_fc', type=bool, default=True)
     parser.add_argument('--num_layers', nargs='+', type=int, default=[1])
+    parser.add_argument('--use_fc', action='store_true', help="Use a fully connected layer")
+    parser.add_argument('--use_resigual', action='store_true', help="Use residual connections")
     parser.add_argument('-p', '--plot', action='store_true', help="Plot the metrics")
     parser.add_argument('-s', '--save_plot', action='store_true', help="Save the plot")
 
@@ -170,9 +172,11 @@ if __name__ == "__main__":
 
     for (min_val, max_val, length, num_epochs, num_layers) in loop:
         input_dim = output_dim = length
-        num_heads = 1
+        # num_heads = 1
         batch_size = 128
-        model = SortNet(input_dim, output_dim, num_layers, args.use_fc).to(device)
+        model = SortNet(
+            input_dim, output_dim, num_layers, args.use_fc, args.use_residual
+        ).to(device)
         loss_fn = nn.MSELoss()
         optimizer = optim.Adam(model.parameters())
         scheduler = StepLR(optimizer, step_size=7, gamma=0.1)
@@ -190,4 +194,6 @@ if __name__ == "__main__":
             device,
         )
         if args.plot:
-            plot_metrics(df, min_val, max_val, length, num_epochs, args.use_fc, args.save_plot)
+            plot_metrics(
+                df, min_val, max_val, length, num_epochs, args.use_fc, args.save_plot
+            )
