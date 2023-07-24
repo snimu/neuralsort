@@ -296,7 +296,7 @@ def plot_metrics(df, min_val, max_val, length, num_epochs, use_fc, save_plot):
 
 def unittest() -> None:
     norm = ScaledNorm(10)
-    x = torch.randn(10, 10)
+    x = torch.randn(10, 10) * 3 + 10
     norm.unittest(x)
 
     attention = AttentionBlock(10, True, 0)
