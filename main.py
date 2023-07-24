@@ -30,33 +30,161 @@ class SelfAttention(nn.Module):
         return attention_weights @ V
 
 
-class SortNet(nn.Module):
-    # TODO: If use_fc, use Linear layer after every SelfAttention layer
-    # TODO: Try using an activation function;
-    #   - has to be able to handle negative values -> nn.LearkyReLU()?
-    def __init__(self, input_dim, output_dim, num_layers, use_fc, use_residual):
-        super(SortNet, self).__init__()
-        self.use_fc = use_fc
-        self.use_residual = use_residual
-        self.layers = nn.Sequential(
-            *[
-                SelfAttention(input_dim)
-                for _ in range(num_layers)
-            ]
-        )
-        if self.use_fc:
-            self.fc = nn.Linear(input_dim, output_dim)
+class ScaledNorm(nn.Module):
+    def __init__(self, size: int):
+        super().__init__()
+        self.norm = nn.LayerNorm(size)
+        self.mean = 0.0
+        self.std = 1.0
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.norm(x)
+        return (
+            x * torch.sqrt(
+                self.std**2 + torch.finfo(torch.float).eps
+            )
+            + self.mean
+        )
+
+    def unittest(self, x: torch.Tensor) -> None:
+        self.mean, self.std = x.mean(dim=-1, keepdim=True), x.std(dim=-1, keepdim=True)
+        y = self.norm(x)
+        assert torch.allclose(y.std(), x.std())
+        assert torch.allclose(y.mean(), x.mean())
+
+
+class AttentionBlock(nn.Module):
+    def __init__(self, size: int, use_norm: bool, layer: int, negative_slope: float = 0.5):
+        super().__init__()
+        self.use_norm = use_norm
+        self.layers = nn.Sequential()
+        # Use norm after every layer
+        #   s.t. the mean and std are preserved throughout the network
+        self.layers.add_module(
+            f"SelfAttention{layer}",
+            SelfAttention(size)
+        )
+        self.layers.add_module(
+            f"LeakyReLU{layer}",
+            nn.LeakyReLU(negative_slope=negative_slope)
+        )
+        if use_norm:
+            self.layers.add_module(
+                f"Norm{layer}_2",
+                ScaledNorm(size)
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.permute(1, 0, 2)  # SelfAttention requires (seq_len, batch, feature)
+        x = self.layers(x)
+        x = x.permute(1, 0, 2)
+        return x
+
+    def unittest(self, x: torch.Tensor) -> None:
+        if self.use_norm:
+            y = self.forward(x)
+            assert torch.allclose(y.std(), x.std())
+            assert torch.allclose(y.mean(), x.mean())
+
+
+class MLPBlock(nn.Module):
+    def __init__(
+            self,
+            size: int,
+            use_norm: bool,
+            layer: int,
+            expansion: float,
+            negative_slope: float = 0.5
+    ):
+        super().__init__()
+        self.use_norm = use_norm
+        self.layers = nn.Sequential()
+        self.layers.add_module(
+            f"Linear{layer}_1",
+            nn.Linear(size, int(expansion * size))
+        )
+        self.layers.add_module(
+            f"LeakyReLU{layer}_1",
+            nn.LeakyReLU(negative_slope=negative_slope)
+        )
+        if use_norm:
+            self.layers.add_module(
+                f"Norm{layer}_11",
+                ScaledNorm(size)
+            )
+
+        self.layers.add_module(
+            f"Linear{layer}_2",
+            nn.Linear(int(expansion * size), size)
+        )
+        self.layers.add_module(
+            f"LeakyReLU{layer}_2",
+            nn.LeakyReLU(negative_slope=negative_slope)
+        )
+        if use_norm:
+            self.layers.add_module(
+                f"Norm{layer}_21",
+                ScaledNorm(size)
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.layers(x)
+
+    def unittest(self, x: torch.Tensor) -> None:
+        if self.use_norm:
+            y = self.layers(x)
+            assert torch.allclose(y.std(), x.std())
+            assert torch.allclose(y.mean(), x.mean())
+
+
+class SortNet(nn.Module):
+    def __init__(
+            self,
+            size: int,
+            num_layers: int,
+            use_fc: bool,
+            expansion: float = 2,
+            use_norm: bool = True,
+            use_residual: bool = True,
+            negative_slope: float = 0.5
+    ):
+        assert num_layers % 2 == 0, "Number of layers must be even"
+        super(SortNet, self).__init__()
+
+        self.use_residual = use_residual
+        self.use_norm = use_norm
+
+        self.layers = nn.Sequential()
+        for i in range(num_layers // 2):
+            self.layers.add_module(
+                f"AttentionBlock{i}",
+                AttentionBlock(size, use_norm, i, negative_slope)
+            )
+            self.layers.add_module(
+                f"MLPBlock{i+1}" if use_fc else f"AttentionBlock{i+1}",
+                MLPBlock(size, use_norm, i+1, expansion, negative_slope)
+                if use_fc
+                else AttentionBlock(size, use_norm, i+1, negative_slope)
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mean, std = x.mean(dim=-1, keepdim=True), x.std(dim=-1, keepdim=True)
+        for module in self.modules():
+            if not isinstance(module, ScaledNorm):
+                continue
+            module.mean = mean
+            module.std = std
+
         for layer in self.layers:
-            x = x + layer(x) if self.use_residual else layer(x)
-        x = x.permute(1, 0, 2)  # Return to original (batch, seq_len, feature)
-        if self.use_fc:
-            output = x + self.fc(x) if self.use_residual else self.fc(x)
-            return output
-        else:
-            return x
+            x = layer(x) + x if self.use_residual else layer(x)
+
+        return x
+
+    def unittest(self, x: torch.Tensor) -> None:
+        if self.use_norm:
+            y = self.forward(x)
+            assert torch.allclose(y.std(), x.std())
+            assert torch.allclose(y.mean(), x.mean())
 
 
 def generate_dataset(length, min_val, max_val, batch_size, device):
@@ -158,8 +286,8 @@ if __name__ == "__main__":
     parser.add_argument('--length', nargs='+', type=int, default=[10])
     parser.add_argument('--num_epochs', nargs='+', type=int, default=[100])
     parser.add_argument('--num_layers', nargs='+', type=int, default=[1])
+    parser.add_argument('--use_residual', type=bool, default=True, help="Use residual connections")
     parser.add_argument('--use_fc', action='store_true', help="Use a fully connected layer")
-    parser.add_argument('--use_resigual', action='store_true', help="Use residual connections")
     parser.add_argument('-p', '--plot', action='store_true', help="Plot the metrics")
     parser.add_argument('-s', '--save_plot', action='store_true', help="Save the plot")
 
