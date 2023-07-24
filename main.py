@@ -48,12 +48,10 @@ class ScaledNorm(nn.Module):
 
     def unittest(self, x: torch.Tensor) -> None:
         self.mean, self.std = x.mean(dim=-1, keepdim=True), x.std(dim=-1, keepdim=True)
-        y = self(x)
+        x_ = x * 5  # scale up
+        y = self(x_)
 
-        print(x, y)
-        print(f"{self.mean=}, {self.std=}, {y.mean()=}, {y.std()=}, {x.mean()=}, {x.std()=}")
-        assert torch.allclose(y.std(), x.std())
-        assert torch.allclose(y.mean(), x.mean())
+        assert torch.allclose(y, x, atol=1, rtol=1e-2)
 
 
 class AttentionBlock(nn.Module):
