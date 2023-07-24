@@ -41,7 +41,7 @@ class ScaledNorm(nn.Module):
         x = self.norm(x)
         return (
             x * torch.sqrt(
-                self.std**2 + torch.finfo(torch.float).eps
+                self.std**2
             )
             + self.mean
         )
