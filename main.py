@@ -39,12 +39,13 @@ class ScaledNorm(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.norm(x)
-        return (
-            x * torch.sqrt(
-                self.std**2 + torch.finfo(torch.float).eps
-            )
-            + self.mean
-        )
+        return x
+        # return (
+        #     x * torch.sqrt(
+        #         self.std**2 + torch.finfo(torch.float).eps
+        #     )
+        #     + self.mean
+        # )
 
     def unittest(self, x: torch.Tensor) -> None:
         self.mean, self.std = x.mean(dim=-1, keepdim=True), x.std(dim=-1, keepdim=True)
