@@ -49,6 +49,8 @@ class ScaledNorm(nn.Module):
     def unittest(self, x: torch.Tensor) -> None:
         self.mean, self.std = x.mean(dim=-1, keepdim=True), x.std(dim=-1, keepdim=True)
         y = self.norm(x)
+
+        print(y.std(), x.std())
         assert torch.allclose(y.std(), x.std())
         assert torch.allclose(y.mean(), x.mean())
 
