@@ -48,7 +48,7 @@ class ScaledNorm(nn.Module):
 
     def unittest(self, x: torch.Tensor) -> None:
         self.mean, self.std = x.mean(dim=-1, keepdim=True), x.std(dim=-1, keepdim=True)
-        y = self.norm(x)
+        y = self(x)
 
         print(x, y)
         print(f"{self.mean=}, {self.std=}, {y.mean()=}, {y.std()=}, {x.mean()=}, {x.std()=}")
