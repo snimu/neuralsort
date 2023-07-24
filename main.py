@@ -39,20 +39,18 @@ class ScaledNorm(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.norm(x)
-        return x
-        # return (
-        #     x * torch.sqrt(
-        #         self.std**2 + torch.finfo(torch.float).eps
-        #     )
-        #     + self.mean
-        # )
+        return (
+            x * torch.sqrt(
+                self.std**2 + torch.finfo(torch.float).eps
+            )
+            + self.mean
+        )
 
     def unittest(self, x: torch.Tensor) -> None:
         self.mean, self.std = x.mean(dim=-1, keepdim=True), x.std(dim=-1, keepdim=True)
         y = self.norm(x)
 
-        print(y.std(), x.std())
-        print(y.mean(), x.mean())
+        print(f"{self.mean=}, {self.std=}, {y.mean()=}, {y.std()=}, {x.mean()=}, {x.std()=}")
         assert torch.allclose(y.std(), x.std())
         assert torch.allclose(y.mean(), x.mean())
 
@@ -296,8 +294,9 @@ def plot_metrics(df, min_val, max_val, length, num_epochs, use_fc, save_plot):
 
 
 def unittest() -> None:
-    norm = ScaledNorm(10)
     x = torch.randn(10, 10) * 3 + 10
+
+    norm = ScaledNorm(10)
     norm.unittest(x)
 
     attention = AttentionBlock(10, True, 0)
