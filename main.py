@@ -286,6 +286,7 @@ if __name__ == "__main__":
     parser.add_argument('--length', nargs='+', type=int, default=[10])
     parser.add_argument('--num_epochs', nargs='+', type=int, default=[100])
     parser.add_argument('--num_layers', nargs='+', type=int, default=[1])
+    parser.add_argument('--negative_slope', nargs='+', type=float, default=[0.5])
     parser.add_argument('--use_residual', type=bool, default=True, help="Use residual connections")
     parser.add_argument('--use_fc', action='store_true', help="Use a fully connected layer")
     parser.add_argument('-p', '--plot', action='store_true', help="Plot the metrics")
@@ -306,7 +307,7 @@ if __name__ == "__main__":
         # num_heads = 1
         batch_size = 128
         model = SortNet(
-            input_dim, output_dim, num_layers, args.use_fc, args.use_residual
+            input_dim, output_dim, num_layers, args.use_fc, args.use_residual, args.negative_slope
         ).to(device)
         loss_fn = nn.MSELoss()
         optimizer = optim.Adam(model.parameters())
