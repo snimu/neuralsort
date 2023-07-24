@@ -51,6 +51,7 @@ class ScaledNorm(nn.Module):
         y = self.norm(x)
 
         print(y.std(), x.std())
+        print(y.mean(), x.mean())
         assert torch.allclose(y.std(), x.std())
         assert torch.allclose(y.mean(), x.mean())
 
