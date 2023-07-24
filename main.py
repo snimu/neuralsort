@@ -82,6 +82,12 @@ class AttentionBlock(nn.Module):
 
     def unittest(self, x: torch.Tensor) -> None:
         if self.use_norm:
+            mean, std = x.mean(dim=-1, keepdim=True), x.std(dim=-1, keepdim=True)
+            for module in self.modules():
+                if not isinstance(module, ScaledNorm):
+                    continue
+                module.mean = mean
+                module.std = std
             y = self.forward(x)
             assert torch.allclose(y.std(), x.std())
             assert torch.allclose(y.mean(), x.mean())
@@ -132,6 +138,12 @@ class MLPBlock(nn.Module):
 
     def unittest(self, x: torch.Tensor) -> None:
         if self.use_norm:
+            mean, std = x.mean(dim=-1, keepdim=True), x.std(dim=-1, keepdim=True)
+            for module in self.modules():
+                if not isinstance(module, ScaledNorm):
+                    continue
+                module.mean = mean
+                module.std = std
             y = self.layers(x)
             assert torch.allclose(y.std(), x.std())
             assert torch.allclose(y.mean(), x.mean())
@@ -279,6 +291,21 @@ def plot_metrics(df, min_val, max_val, length, num_epochs, use_fc, save_plot):
         plt.show()
 
 
+def unittest() -> None:
+    norm = ScaledNorm(10)
+    x = torch.randn(10, 10)
+    norm.unittest(x)
+
+    attention = AttentionBlock(10, True, 0)
+    attention.unittest(x)
+
+    mlp = MLPBlock(10, True, 0, 2)
+    mlp.unittest(x)
+
+    model = SortNet(10, 2, True)
+    model.unittest(x)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='SortNet Training')
     parser.add_argument('--min_val', nargs='+', type=int, default=[0])
@@ -291,8 +318,14 @@ if __name__ == "__main__":
     parser.add_argument('--use_fc', action='store_true', help="Use a fully connected layer")
     parser.add_argument('-p', '--plot', action='store_true', help="Plot the metrics")
     parser.add_argument('-s', '--save_plot', action='store_true', help="Save the plot")
+    parser.add_argument('-u', '--unittest', action='store_true', help="Run unittests")
 
     args = parser.parse_args()
+
+    if args.unittest:
+        unittest()
+        exit()
+
     all_values = list(itertools.product(args.min_val, args.max_val, args.length, args.num_epochs, args.num_layers))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
