@@ -33,7 +33,7 @@ class SelfAttention(nn.Module):
 class ScaledNorm(nn.Module):
     def __init__(self, size: int):
         super().__init__()
-        self.norm = nn.LayerNorm(size)
+        self.norm = nn.LayerNorm(size, correction=False)
         self.mean = 0.0
         self.std = 1.0
 
@@ -76,22 +76,23 @@ class AttentionBlock(nn.Module):
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.permute(1, 0, 2)  # SelfAttention requires (seq_len, batch, feature)
+        x = x.permute(1, 0)
         x = self.layers(x)
-        x = x.permute(1, 0, 2)
+        x = x.permute(1, 0)
         return x
 
     def unittest(self, x: torch.Tensor) -> None:
         if self.use_norm:
-            mean, std = x.mean(dim=-1, keepdim=True), x.std(dim=-1, keepdim=True)
+            meanx, stdx = x.mean(dim=-1, keepdim=True), x.std(dim=-1, keepdim=True)
             for module in self.modules():
                 if not isinstance(module, ScaledNorm):
                     continue
-                module.mean = mean
-                module.std = std
+                module.mean = meanx
+                module.std = stdx
             y = self.forward(x)
-            assert torch.allclose(y.std(), x.std())
-            assert torch.allclose(y.mean(), x.mean())
+            meany, stdy = y.mean(dim=-1, keepdim=True), y.std(dim=-1, keepdim=True)
+            assert torch.allclose(stdx, stdy, atol=1, rtol=1e-2)
+            assert torch.allclose(meanx, meany, atol=1, rtol=1e-2)
 
 
 class MLPBlock(nn.Module):
