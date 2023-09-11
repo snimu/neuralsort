@@ -16,6 +16,7 @@ import torch
 from torch import nn
 import torch.optim
 from torch.optim import Adam
+import rich
 
 
 def mean_fn(x: torch.Tensor) -> torch.Tensor:
@@ -367,20 +368,22 @@ def validate(model: SortNet, niter: int, batch_size: int, seq_len: int, low: int
     loss = 0.0
     for _ in range(niter):
         # Generate a batch of data
-        data = generate_data(batch_size, seq_len, low, high)
+        data, y = generate_data(batch_size, seq_len, low, high)
 
         # Forward pass the data through the network
         result = model(data)
 
         # Compute the loss
-        loss += loss_fn(result, data).item()
+        loss += loss_fn(result, y).item()
 
     return loss / niter
 
 
 def generate_data(batch_size: int, seq_len: int, low: int = -100, high: int = 100) -> torch.Tensor:
     """Generate a batch of data for testing."""
-    return torch.randint(0, 100, (batch_size, seq_len), dtype=torch.float)
+    x = torch.randint(low, high, (batch_size, seq_len), dtype=torch.float)
+    y, _ = torch.sort(x, dim=1)
+    return x, y
 
 
 def train_loop(hparams: argparse.Namespace) -> None:
@@ -423,13 +426,13 @@ def train_loop(hparams: argparse.Namespace) -> None:
     # Train the network
     for epoch in range(hparams.num_epochs):
         # Generate a batch of data
-        data = generate_data(hparams.batch_size, hparams.embed_dim, hparams.low, hparams.high)
-
+        data, y = generate_data(hparams.batch_size, hparams.embed_dim, hparams.low, hparams.high)
+        
         # Forward pass the data through the network
         result = sortnet(data)
 
         # Compute the loss
-        loss = loss_fn(result, data)
+        loss = loss_fn(result, y)
 
         # Backpropagate
         optimizer.zero_grad()
@@ -442,12 +445,18 @@ def train_loop(hparams: argparse.Namespace) -> None:
             f"ID-loss: {validate_id(sortnet)} | OOD-loss: {validate_ood(sortnet)}"
         )
 
+    x, y = generate_data(1, hparams.embed_dim, hparams.high, hparams.high*2)
+    result = sortnet(x)
+    print(f"Input: {x}")
+    print(f"Target: {y}")
+    print(f"Output: {result}")
+
 
 def get_hparams() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
     parser.add_argument("-t", "--test", action="store_true", help="Run tests")
-    parser.add_argument("-e", "--num_epochs", type=int, default=100, help="Number of epochs")
+    parser.add_argument("-e", "--num_epochs", type=int, default=1000, help="Number of epochs")
     parser.add_argument("-b", "--batch_size", type=int, default=128, help="Batch size")
     parser.add_argument("-a", "--low", type=int, default=-100, help="Lower bound of the data")
     parser.add_argument("-u", "--high", type=int, default=100, help="Upper bound of the data")
@@ -463,7 +472,9 @@ def get_hparams() -> argparse.Namespace:
     parser.add_argument("-r", "--negative_slope", type=float, default=0.5, help="Negative slope of the LeakyReLU")
     parser.add_argument("-f", "--expansion_factor", type=float, default=3.0, help="Expansion factor of the MLP")
 
-    return parser.parse_args()
+    hparams = parser.parse_args()
+    rich.print(vars(hparams))
+    return hparams
 
 
 def run_tests() -> None:
