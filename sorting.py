@@ -115,16 +115,30 @@ class AttentionBlock(nn.Module):
     negative_slope: The negative slope of the LeakyReLU activation function.
                     Type: float
                     Default: 0.5
+
+    use_residual: Whether to use residuals in the AttentionBlocks and MLPs.
+                    Type: bool
+                    Default: True
+
+    normalize: Whether to normalize the input to the network.
+                Type: bool  
+                Default: True
     
     *args: Arguments for MultiheadAttention
     **kwargs: Keyword arguments for MultiheadAttention
     """
 
     def __init__(
-            self, negative_slope: float = 0.5, use_residual: bool = True, *args, **kwargs
+            self, 
+            negative_slope: float = 0.5, 
+            use_residual: bool = True, 
+            normalize: bool = True,
+            *args, **kwargs
     ) -> None:
         super().__init__()
         self.use_residual = use_residual
+        self.normalize = normalize
+
         self.multiheadattention = MultiheadSelfAttention(*args, **kwargs)
         self.leakyrelu = nn.LeakyReLU(negative_slope)
         self.adaptedlayernorm = AdaptedLayerNorm()
@@ -134,7 +148,9 @@ class AttentionBlock(nn.Module):
         update = self.multiheadattention(x)
         update = self.leakyrelu(update)
         update = update + x if self.use_residual else update
-        update = self.adaptedlayernorm(update, mean, variance)  # Norm residual, because it is returned in the end
+        if self.normalize:
+            # Norm residual, because it is returned in the end
+            update = self.adaptedlayernorm(update, mean, variance)  
 
         return update
     
@@ -183,6 +199,9 @@ class MLP(nn.Module):
     embed_dim (int): The dimension of the input and output.
                         Type: int
 
+    use_residuals (bool): Whether to use residuals in the AttentionBlocks and MLPs.
+                            Type: bool
+
     mean (torch.Tensor): The mean of the input tensor.
                             Type: torch.Tensor
 
@@ -194,6 +213,9 @@ class MLP(nn.Module):
 
     negative_slope (float): The negative slope of the LeakyReLU activation function.
                             Type: float
+
+    normalize (bool): Whether to normalize the input to the network.
+                        Type: bool
     """
     
     def __init__(
@@ -201,10 +223,12 @@ class MLP(nn.Module):
             embed_dim: int, 
             use_residuals: bool = True,
             expansion_factor: float = 2.0,
-            negative_slope: float = 0.5
+            negative_slope: float = 0.5,
+            normalize: bool = True,
     ) -> None:
         super().__init__()
         self.use_residuals = use_residuals
+        self.normalize = normalize
 
         self.linear1 = nn.Linear(embed_dim, int(embed_dim * expansion_factor))
         self.linear2 = nn.Linear(int(embed_dim * expansion_factor), embed_dim)
@@ -219,7 +243,9 @@ class MLP(nn.Module):
         update = self.leakyrelu(update)
         update = self.linear2(update)
         update = update + x if self.use_residuals else update
-        update = self.adaptedlayernorm(update, mean, variance)  # Norm residual, because it is returned in the end
+        if self.normalize:
+            # Norm residual, because it is returned in the end
+            update = self.adaptedlayernorm(update, mean, variance)  
 
         return update
     
@@ -276,6 +302,12 @@ class SortNet(nn.Module):
 
     use_mlp (bool): Whether to use MLPs or AttentionBlocks.
                     Type: bool
+
+    use_residuals (bool): Whether to use residuals in the AttentionBlocks and MLPs.
+                            Type: bool
+
+    normalize (bool): Whether to normalize the input to the network.
+                        Type: bool
     """
     
     def __init__(
@@ -286,6 +318,7 @@ class SortNet(nn.Module):
             num_layers: int = 2,
             use_mlp: bool = False, 
             use_residuals: bool = True,
+            normalize: bool = True,
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
@@ -294,13 +327,23 @@ class SortNet(nn.Module):
         self.num_layers = num_layers
         self.use_mlp = use_mlp
         self.use_residuals = use_residuals
+        self.normalize = normalize
 
         # Create the layers
         self.layers = nn.ModuleList()
         for _ in range(self.num_layers):
-            self.layers.append(AttentionBlock(self.negative_slope, self.use_residuals, self.embed_dim, 2))
+            self.layers.append(
+                AttentionBlock(
+                    self.negative_slope, self.use_residuals, self.normalize, self.embed_dim, 2
+                )
+            )
             if self.use_mlp:
-                self.layers.append(MLP(self.embed_dim, self.use_residuals, self.expansion_factor, self.negative_slope))
+                self.layers.append(
+                    MLP(
+                        self.embed_dim, self.use_residuals, self.expansion_factor, self.negative_slope,
+                        normalize=self.normalize
+                    )
+                )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Get the mean and variance of the input tensor
@@ -413,7 +456,7 @@ def train_loop(hparams: argparse.Namespace) -> None:
 
     # Create an optimizer
     wdm = hparams.weight_decay_multiple
-    wd = wdm * math.sqrt(1 / hparams.num_epochs)
+    wd = wdm * math.sqrt(1 / (hparams.num_epochs + torch.finfo(torch.float).eps))
     optimizer = Adam(sortnet.parameters(), lr=hparams.learning_rate, weight_decay=wd)
 
     # Create validation functions
@@ -454,11 +497,20 @@ def train_loop(hparams: argparse.Namespace) -> None:
                 f"ID-loss: {validate_id(sortnet):.2f} | OOD-loss: {validate_ood(sortnet):.2f}"
             )
 
-    x, y = generate_data(1, hparams.embed_dim, hparams.high, hparams.high*2)
-    result = sortnet(x)
+    print("OOD: ")
+    x, y_ood = generate_data(1, hparams.embed_dim, hparams.high, hparams.high*2)
+    result_ood = sortnet(x)
     print(f"Input: {x}")
-    print(f"Target: {y}")
-    print(f"Output: {result}")
+    print(f"Target: {y_ood}")
+    print(f"Output: {result_ood}")
+
+    print("\nID: ")
+    x, y_id = generate_data(1, hparams.embed_dim, hparams.low, hparams.high)
+    result_id = sortnet(x)
+    print(f"Input: {x}")
+    print(f"Output: {y_id}")
+    print(f"Results: {result_id.round(decimals=0)}")
+
 
 
 def get_hparams() -> argparse.Namespace:
@@ -466,7 +518,7 @@ def get_hparams() -> argparse.Namespace:
 
     parser.add_argument("-t", "--test", action="store_true", help="Run tests")
     parser.add_argument("-e", "--num_epochs", type=int, default=500, help="Number of epochs")
-    parser.add_argument("-b", "--batch_size", type=int, default=128, help="Batch size")
+    parser.add_argument("-b", "--batch_size", type=int, default=16, help="Batch size")
     parser.add_argument("-a", "--low", type=int, default=-100, help="Lower bound of the data")
     parser.add_argument("-u", "--high", type=int, default=100, help="Upper bound of the data")
     parser.add_argument("-l", "--learning_rate", type=float, default=1e-3, help="Learning rate")
@@ -476,12 +528,13 @@ def get_hparams() -> argparse.Namespace:
              "See https://arxiv.org/pdf/1711.05101.pdf for more information."
     )
     parser.add_argument("-d", "--embed_dim", type=int, default=8, help="Embedding dimension; equal to the sequence length")
-    parser.add_argument("-n", "--num_layers", type=int, default=1, help="Number of layers")
+    parser.add_argument("-n", "--num_layers", type=int, default=6, help="Number of layers")
     parser.add_argument("-m", "--use_mlp", action="store_true", help="Use MLPs in addition to AttentionBlocks")
     parser.add_argument("-r", "--negative_slope", type=float, default=0.5, help="Negative slope of the LeakyReLU")
     parser.add_argument("-f", "--expansion_factor", type=float, default=3.0, help="Expansion factor of the MLP")
 
     parser.add_argument("--use_residual", type=bool, default=True, help="Use residuals in the AttentionBlocks and MLPs")
+    parser.add_argument("--normalize", type=bool, default=True, help="Normalize the input to the network")
 
     hparams = parser.parse_args()
     rich.print(vars(hparams))
