@@ -121,9 +121,10 @@ class AttentionBlock(nn.Module):
     """
 
     def __init__(
-            self, negative_slope: float = 0.5, *args, **kwargs
+            self, negative_slope: float = 0.5, use_residual: bool = True, *args, **kwargs
     ) -> None:
         super().__init__()
+        self.use_residual = use_residual
         self.multiheadattention = MultiheadSelfAttention(*args, **kwargs)
         self.leakyrelu = nn.LeakyReLU(negative_slope)
         self.adaptedlayernorm = AdaptedLayerNorm()
@@ -132,7 +133,8 @@ class AttentionBlock(nn.Module):
         # Apply the attention block
         update = self.multiheadattention(x)
         update = self.leakyrelu(update)
-        update = self.adaptedlayernorm(update + x, mean, variance)  # Norm residual, because it is returned in the end
+        update = update + x if self.use_residual else update
+        update = self.adaptedlayernorm(update, mean, variance)  # Norm residual, because it is returned in the end
 
         return update
     
@@ -197,10 +199,13 @@ class MLP(nn.Module):
     def __init__(
             self, 
             embed_dim: int, 
+            use_residuals: bool = True,
             expansion_factor: float = 2.0,
             negative_slope: float = 0.5
     ) -> None:
         super().__init__()
+        self.use_residuals = use_residuals
+
         self.linear1 = nn.Linear(embed_dim, int(embed_dim * expansion_factor))
         self.linear2 = nn.Linear(int(embed_dim * expansion_factor), embed_dim)
         self.leakyrelu = nn.LeakyReLU(negative_slope)
@@ -213,7 +218,8 @@ class MLP(nn.Module):
         update = self.linear1(x)
         update = self.leakyrelu(update)
         update = self.linear2(update)
-        update = self.adaptedlayernorm(update + x, mean, variance)  # Norm residual, because it is returned in the end
+        update = update + x if self.use_residuals else update
+        update = self.adaptedlayernorm(update, mean, variance)  # Norm residual, because it is returned in the end
 
         return update
     
@@ -278,7 +284,8 @@ class SortNet(nn.Module):
             negative_slope: float = 0.5,
             expansion_factor: float = 2.0,
             num_layers: int = 2,
-            use_mlp: bool = False
+            use_mlp: bool = False, 
+            use_residuals: bool = True,
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
@@ -286,13 +293,14 @@ class SortNet(nn.Module):
         self.expansion_factor = expansion_factor
         self.num_layers = num_layers
         self.use_mlp = use_mlp
+        self.use_residuals = use_residuals
 
         # Create the layers
         self.layers = nn.ModuleList()
         for _ in range(self.num_layers):
-            self.layers.append(AttentionBlock(self.negative_slope, self.embed_dim, 2))
+            self.layers.append(AttentionBlock(self.negative_slope, self.use_residuals, self.embed_dim, 2))
             if self.use_mlp:
-                self.layers.append(MLP(self.embed_dim, self.expansion_factor, self.negative_slope))
+                self.layers.append(MLP(self.embed_dim, self.use_residuals, self.expansion_factor, self.negative_slope))
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Get the mean and variance of the input tensor
@@ -440,10 +448,11 @@ def train_loop(hparams: argparse.Namespace) -> None:
         optimizer.step()
 
         # Print the loss
-        print(
-            f"Epoch {epoch} | Train-loss: {loss.item()} | "
-            f"ID-loss: {validate_id(sortnet)} | OOD-loss: {validate_ood(sortnet)}"
-        )
+        if epoch % 10 == 0:
+            rich.print(
+                f"Epoch {epoch} | Train-loss: {loss.item():.2f} | "
+                f"ID-loss: {validate_id(sortnet):.2f} | OOD-loss: {validate_ood(sortnet):.2f}"
+            )
 
     x, y = generate_data(1, hparams.embed_dim, hparams.high, hparams.high*2)
     result = sortnet(x)
@@ -456,7 +465,7 @@ def get_hparams() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
     parser.add_argument("-t", "--test", action="store_true", help="Run tests")
-    parser.add_argument("-e", "--num_epochs", type=int, default=1000, help="Number of epochs")
+    parser.add_argument("-e", "--num_epochs", type=int, default=500, help="Number of epochs")
     parser.add_argument("-b", "--batch_size", type=int, default=128, help="Batch size")
     parser.add_argument("-a", "--low", type=int, default=-100, help="Lower bound of the data")
     parser.add_argument("-u", "--high", type=int, default=100, help="Upper bound of the data")
@@ -468,9 +477,11 @@ def get_hparams() -> argparse.Namespace:
     )
     parser.add_argument("-d", "--embed_dim", type=int, default=8, help="Embedding dimension; equal to the sequence length")
     parser.add_argument("-n", "--num_layers", type=int, default=1, help="Number of layers")
-    parser.add_argument("-m", "--use_mlp", action="store_true", help="Use MLPs instead of AttentionBlocks")
+    parser.add_argument("-m", "--use_mlp", action="store_true", help="Use MLPs in addition to AttentionBlocks")
     parser.add_argument("-r", "--negative_slope", type=float, default=0.5, help="Negative slope of the LeakyReLU")
     parser.add_argument("-f", "--expansion_factor", type=float, default=3.0, help="Expansion factor of the MLP")
+
+    parser.add_argument("--use_residual", type=bool, default=True, help="Use residuals in the AttentionBlocks and MLPs")
 
     hparams = parser.parse_args()
     rich.print(vars(hparams))
