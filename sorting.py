@@ -482,9 +482,6 @@ def train_loop(hparams: argparse.Namespace) -> None:
     )
 
     # Train the network
-    train_losses = []
-    val_losses_id = []
-    val_losses_ood = []
     for epoch in range(hparams.num_epochs):
         # Generate a batch of data
         data, y = generate_data(hparams.batch_size, hparams.embed_dim, hparams.low, hparams.high)
@@ -504,15 +501,8 @@ def train_loop(hparams: argparse.Namespace) -> None:
         val_loss_id = validate_id(sortnet)
         val_loss_ood = validate_ood(sortnet)
 
-        # Save the losses
-        train_losses.append(loss.item())
-        val_losses_id.append(val_loss_id)
-        val_losses_ood.append(val_loss_ood)
-
         # Log the losses
-        wandb.log("train_loss", loss.item())
-        wandb.log("val_loss_id", val_loss_id)
-        wandb.log("val_loss_ood", val_loss_ood)
+        wandb.log({"train_loss": loss.item(), "val_loss_id": val_loss_id, "val_loss_ood": val_loss_ood})
 
         # Print the loss
         if epoch % 10 == 0:
@@ -520,13 +510,6 @@ def train_loop(hparams: argparse.Namespace) -> None:
                 f"Epoch {epoch} | Train-loss: {loss.item():.2f} | "
                 f"ID-loss: {val_loss_id:.2f} | OOD-loss: {val_loss_ood:.2f}"
             )
-
-    if hparams.plot_losses:
-        plt.plot(np.arange(len(train_losses)), train_losses, label="Train loss")
-        plt.plot(np.arange(len(val_losses_id)), val_losses_id, label="ID loss")
-        # plt.plot(np.arange(len(val_losses_ood)), val_losses_ood, label="OOD loss")
-        plt.legend()
-        plt.show()
 
     if hparams.check_results:
         check_results(sortnet, hparams)
@@ -572,7 +555,6 @@ def get_hparams() -> argparse.Namespace:
     parser.add_argument("-f", "--expansion_factor", type=float, default=3.0, help="Expansion factor of the MLP")
 
     parser.add_argument("-c", "--check_results", help="Check the model performance after training", action="store_true")
-    parser.add_argument("-p", "--plot_losses", help="Plot the losses", action="store_true")
 
     parser.add_argument("--use_residual", action="store_true", help="Use residuals in the AttentionBlocks and MLPs")
     parser.add_argument("--normalize", action="store_true", help="Normalize the input to the network")
