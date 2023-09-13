@@ -11,12 +11,17 @@ Important ideas:
 import argparse
 import functools
 import math
+import os
 
 import torch
 from torch import nn
 import torch.optim
 from torch.optim import Adam
+import wandb
 import rich
+import matplotlib.pyplot as plt
+import numpy as np
+import torchinfo
 
 
 def mean_fn(x: torch.Tensor) -> torch.Tensor:
@@ -414,7 +419,7 @@ def validate(model: SortNet, niter: int, batch_size: int, seq_len: int, low: int
     The loss of the model on the data.
     """
     # Create a loss function
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.MSELoss() if hparams.loss == "mse" else nn.L1Loss()
 
     loss = 0.0
     for _ in range(niter):
@@ -441,6 +446,7 @@ def train_loop(hparams: argparse.Namespace) -> None:
     """
     The training loop for the SortNet.
     """
+    wandb.init(project="sorting", config=vars(hparams), )
 
     # Create a SortNet object
     sortnet = SortNet(
@@ -450,9 +456,10 @@ def train_loop(hparams: argparse.Namespace) -> None:
         hparams.num_layers,
         hparams.use_mlp
     )
+    wandb.watch(sortnet)
 
     # Create a loss function
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.MSELoss() if hparams.loss == "mse" else nn.L1Loss()
 
     # Create an optimizer
     wdm = hparams.weight_decay_multiple
@@ -475,6 +482,9 @@ def train_loop(hparams: argparse.Namespace) -> None:
     )
 
     # Train the network
+    train_losses = []
+    val_losses_id = []
+    val_losses_ood = []
     for epoch in range(hparams.num_epochs):
         # Generate a batch of data
         data, y = generate_data(hparams.batch_size, hparams.embed_dim, hparams.low, hparams.high)
@@ -490,27 +500,55 @@ def train_loop(hparams: argparse.Namespace) -> None:
         loss.backward()
         optimizer.step()
 
+        # Validate
+        val_loss_id = validate_id(sortnet)
+        val_loss_ood = validate_ood(sortnet)
+
+        # Save the losses
+        train_losses.append(loss.item())
+        val_losses_id.append(val_loss_id)
+        val_losses_ood.append(val_loss_ood)
+
+        # Log the losses
+        wandb.log("train_loss", loss.item())
+        wandb.log("val_loss_id", val_loss_id)
+        wandb.log("val_loss_ood", val_loss_ood)
+
         # Print the loss
         if epoch % 10 == 0:
             rich.print(
                 f"Epoch {epoch} | Train-loss: {loss.item():.2f} | "
-                f"ID-loss: {validate_id(sortnet):.2f} | OOD-loss: {validate_ood(sortnet):.2f}"
+                f"ID-loss: {val_loss_id:.2f} | OOD-loss: {val_loss_ood:.2f}"
             )
 
-    print("OOD: ")
-    x, y_ood = generate_data(1, hparams.embed_dim, hparams.high, hparams.high*2)
-    result_ood = sortnet(x)
-    print(f"Input: {x}")
-    print(f"Target: {y_ood}")
-    print(f"Output: {result_ood}")
+    if hparams.plot_losses:
+        plt.plot(np.arange(len(train_losses)), train_losses, label="Train loss")
+        plt.plot(np.arange(len(val_losses_id)), val_losses_id, label="ID loss")
+        # plt.plot(np.arange(len(val_losses_ood)), val_losses_ood, label="OOD loss")
+        plt.legend()
+        plt.show()
 
-    print("\nID: ")
-    x, y_id = generate_data(1, hparams.embed_dim, hparams.low, hparams.high)
-    result_id = sortnet(x)
-    print(f"Input: {x}")
-    print(f"Output: {y_id}")
-    print(f"Results: {result_id.round(decimals=0)}")
+    if hparams.check_results:
+        check_results(sortnet, hparams)
 
+
+def check_results(sortnet: SortNet, hparams: argparse.Namespace) -> None:
+    x, _ = generate_data(1, hparams.embed_dim, hparams.low, hparams.high)
+    torchinfo.summary(sortnet, input_data=x)
+
+    
+    # Plot the relative error per element
+    num_iters = 10
+    diff = torch.empty(num_iters, hparams.embed_dim)
+    for i in range(num_iters):
+        x, y = generate_data(1, hparams.embed_dim, hparams.low, hparams.high)
+        result = sortnet(x)
+
+        diff[i] = ((y - result) / (y + result)).abs()
+
+    diff = diff.mean(dim=0).reshape(-1).abs().detach().numpy()
+    plt.plot(np.arange(len(diff)), diff)
+    plt.show()
 
 
 def get_hparams() -> argparse.Namespace:
@@ -527,14 +565,18 @@ def get_hparams() -> argparse.Namespace:
         help="Weight decay multiple. "
              "See https://arxiv.org/pdf/1711.05101.pdf for more information."
     )
-    parser.add_argument("-d", "--embed_dim", type=int, default=8, help="Embedding dimension; equal to the sequence length")
+    parser.add_argument("-d", "--embed_dim", type=int, default=100, help="Embedding dimension; equal to the sequence length")
     parser.add_argument("-n", "--num_layers", type=int, default=6, help="Number of layers")
     parser.add_argument("-m", "--use_mlp", action="store_true", help="Use MLPs in addition to AttentionBlocks")
     parser.add_argument("-r", "--negative_slope", type=float, default=0.5, help="Negative slope of the LeakyReLU")
     parser.add_argument("-f", "--expansion_factor", type=float, default=3.0, help="Expansion factor of the MLP")
 
-    parser.add_argument("--use_residual", type=bool, default=True, help="Use residuals in the AttentionBlocks and MLPs")
-    parser.add_argument("--normalize", type=bool, default=True, help="Normalize the input to the network")
+    parser.add_argument("-c", "--check_results", help="Check the model performance after training", action="store_true")
+    parser.add_argument("-p", "--plot_losses", help="Plot the losses", action="store_true")
+
+    parser.add_argument("--use_residual", action="store_true", help="Use residuals in the AttentionBlocks and MLPs")
+    parser.add_argument("--normalize", action="store_true", help="Normalize the input to the network")
+    parser.add_argument("--loss", type=str, default="mse", choices=["mse", "l1"], help="The loss function to use")
 
     hparams = parser.parse_args()
     rich.print(vars(hparams))
