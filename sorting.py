@@ -435,11 +435,56 @@ def validate(model: SortNet, niter: int, batch_size: int, seq_len: int, low: int
     return loss / niter
 
 
-def generate_data(batch_size: int, seq_len: int, low: int = -100, high: int = 100) -> torch.Tensor:
+def generate_data(
+    batch_size: int, seq_len: int, low: int = -100, high: int = 100, dist_type: str | None = None
+) -> torch.Tensor:
+
     """Generate a batch of data for testing."""
-    x = torch.randint(low, high, (batch_size, seq_len), dtype=torch.float)
+    
+    # Randomly choose the type of distribution for this batch
+    dist_type = np.random.choice(
+        ['uniform', 'clustered', 'bimodal', 'exponential', 'half_normal']
+    ) if dist_type is None else dist_type
+
+    if dist_type == 'uniform':
+        # Uniform distribution
+        x = torch.randint(low, high, (batch_size, seq_len), dtype=torch.float)
+    elif dist_type == 'clustered':
+        # Clustered distribution: choose a random center for each sequence
+        centers = torch.randint(low, high, (batch_size, 1), dtype=torch.float).repeat(1, seq_len)
+        std_dev = (high - low) / 5.0  # Adjust the standard deviation so that most points fall between low and high
+        x = torch.normal(mean=centers, std=std_dev)
+
+    elif dist_type == 'bimodal':
+        # Bimodal distribution: choose two random centers for each sequence
+        # Generate two mean-tensors and two std-tensors
+        half_width = int(seq_len // 2)
+        centers1 = torch.randint(low, high, (batch_size, 1), dtype=torch.float).repeat(1, half_width)
+        centers2 = torch.randint(low, high, (batch_size, 1), dtype=torch.float).repeat(1, seq_len - half_width)
+        std_dev1 = torch.randint(0, int(round((high-low / 5.0))), (batch_size, 1), dtype=torch.float).repeat(1, half_width)
+        std_dev2 = torch.randint(0, int(round((high-low / 5.0))), (batch_size, 1), dtype=torch.float).repeat(1, seq_len - half_width)
+
+        # Generate two normal distributions from the mean-tensors and std-tensors
+        x1 = torch.normal(mean=centers1, std=std_dev1)
+        x2 = torch.normal(mean=centers2, std=std_dev2)
+        
+        # Take the mean of the two distributions.
+        x = torch.cat([x1, x2], dim=1)
+
+    else:  # 'exponential'
+        # Exponential distribution: generate data from an exponential distribution
+        scale = (high - low) / 5.0  # Adjust the scale so that most points fall between low and high
+        x = torch.distributions.exponential.Exponential(scale).sample((batch_size, seq_len))
+
+    # Clip x so that all its elements are inside [low, high] (inclusive)
+    x = torch.clamp(x, low, high)
+    
+    # Round to nearest integer
+    x = torch.round(x)
+
     y, _ = torch.sort(x, dim=1)
     return x, y
+
 
 
 def train_loop(hparams: argparse.Namespace) -> None:
@@ -456,7 +501,7 @@ def train_loop(hparams: argparse.Namespace) -> None:
         hparams.num_layers,
         hparams.use_mlp
     )
-    wandb.watch(sortnet)
+    wandb.watch(sortnet, log_freq=100, log="all")
 
     # Create a loss function
     loss_fn = nn.MSELoss() if hparams.loss == "mse" else nn.L1Loss()
@@ -534,37 +579,6 @@ def check_results(sortnet: SortNet, hparams: argparse.Namespace) -> None:
     plt.show()
 
 
-def get_hparams() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("-t", "--test", action="store_true", help="Run tests")
-    parser.add_argument("-e", "--num_epochs", type=int, default=500, help="Number of epochs")
-    parser.add_argument("-b", "--batch_size", type=int, default=16, help="Batch size")
-    parser.add_argument("-a", "--low", type=int, default=-100, help="Lower bound of the data")
-    parser.add_argument("-u", "--high", type=int, default=100, help="Upper bound of the data")
-    parser.add_argument("-l", "--learning_rate", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument(
-        "-w", "--weight_decay_multiple", default=0.03, 
-        help="Weight decay multiple. "
-             "See https://arxiv.org/pdf/1711.05101.pdf for more information."
-    )
-    parser.add_argument("-d", "--embed_dim", type=int, default=100, help="Embedding dimension; equal to the sequence length")
-    parser.add_argument("-n", "--num_layers", type=int, default=6, help="Number of layers")
-    parser.add_argument("-m", "--use_mlp", action="store_true", help="Use MLPs in addition to AttentionBlocks")
-    parser.add_argument("-r", "--negative_slope", type=float, default=0.5, help="Negative slope of the LeakyReLU")
-    parser.add_argument("-f", "--expansion_factor", type=float, default=3.0, help="Expansion factor of the MLP")
-
-    parser.add_argument("-c", "--check_results", help="Check the model performance after training", action="store_true")
-
-    parser.add_argument("--use_residual", action="store_true", help="Use residuals in the AttentionBlocks and MLPs")
-    parser.add_argument("--normalize", action="store_true", help="Normalize the input to the network")
-    parser.add_argument("--loss", type=str, default="mse", choices=["mse", "l1"], help="The loss function to use")
-
-    hparams = parser.parse_args()
-    rich.print(vars(hparams))
-    return hparams
-
-
 def run_tests() -> None:
     """Run all tests."""
     test_adaptedlayernorm()
@@ -572,11 +586,59 @@ def run_tests() -> None:
     test_mlp()
     print("All tests passed.")
 
+def get_hparams() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("-t", "--test", action="store_true", help="Run tests")
+    parser.add_argument("-v", "--visualize_output", action="store_true", help="Visualize the output distribution of samples in a batch")
+
+    parser.add_argument("--check_results", help="Check the model performance after training", action="store_true")
+    parser.add_argument("--use_mlp", action="store_true", help="Use MLPs in addition to AttentionBlocks")
+    parser.add_argument("--use_residual", action="store_true", help="Use residuals in the AttentionBlocks and MLPs")
+    parser.add_argument("--normalize", action="store_true", help="Normalize the input to the network")
+
+    parser.add_argument("--num_epochs", type=int, default=500, help="Number of epochs")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
+    parser.add_argument("--num_layers", type=int, default=6, help="Number of layers")
+    parser.add_argument("--embed_dim", type=int, default=100, help="Embedding dimension; equal to the sequence length")
+
+    parser.add_argument("--low", type=int, default=-100, help="Lower bound of the data")
+    parser.add_argument("--high", type=int, default=100, help="Upper bound of the data")
+
+    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--negative_slope", type=float, default=0.5, help="Negative slope of the LeakyReLU")
+    parser.add_argument("--expansion_factor", type=float, default=3.0, help="Expansion factor of the MLP")
+
+    parser.add_argument("--loss", type=str, default="mse", choices=["mse", "l1"], help="The loss function to use")
+    parser.add_argument(
+        "--weight_decay_multiple", default=0.03, 
+        help="Weight decay multiple. "
+             "See https://arxiv.org/pdf/1711.05101.pdf for more information."
+    )
+
+    hparams = parser.parse_args()
+    rich.print(vars(hparams))
+    return hparams
+
+def visualize_output_distribution():
+    """Visualize the output distribution of samples in a batch."""
+    fig, axs = plt.subplots(3, 4)
+    for y in range(3):
+        for x in range(4):
+            dist_type = np.random.choice(['uniform', 'clustered', 'bimodal', 'exponential'])
+            batch_data, _ = generate_data(hparams.batch_size, hparams.embed_dim, hparams.low, hparams.high, dist_type)
+            axs[y, x].hist(batch_data[0], bins='auto')  # visualize first batch
+            axs[y, x].set_title(f"{dist_type=}")
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == "__main__":
     hparams = get_hparams()
 
     if hparams.test:
         run_tests()
+    elif hparams.visualize_output:
+        visualize_output_distribution()
     else:
         train_loop(hparams)
+
