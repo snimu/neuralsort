@@ -6,6 +6,7 @@ import argparse
 import functools
 import math
 import os
+from time import perf_counter
 
 import torch
 from torch import nn
@@ -171,6 +172,78 @@ class SortNet(nn.Module):
         return x
 
 
+def kendall_tau_distance(y_true, y_pred):
+    size = y_true.shape[1]
+    disagreements = torch.zeros(y_true.shape[0])
+    for i in range(size):
+        for j in range(i+1, size):
+            disagreements += ((y_true[:, i] - y_true[:, j]) * (y_pred[:, i] - y_pred[:, j]) < 0).float()
+    return disagreements.mean(dim=0)
+
+
+def kendall_tau_distance_parallel(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
+    y_true_3d = y_true.unsqueeze(2)
+    y_pred_3d = y_pred.unsqueeze(2)
+    y_true_diff = y_true_3d - y_true_3d.transpose(1, 2)
+    y_pred_diff = y_pred_3d - y_pred_3d.transpose(1, 2)
+    disagreements = (y_true_diff * y_pred_diff < 0).float()
+    disagreements_sum = disagreements.sum(dim=(1, 2))
+    kendall_tau = disagreements_sum.mean() / 2  # divide by 2 because we count each disagreement twice
+    return kendall_tau
+
+
+def test_kendaltau() -> None:
+    x = torch.randint(0, 10, (10, 10))
+    y = torch.sort(x, dim=1)[0]
+    assert allclose(kendall_tau_distance(y, y), torch.zeros(10))
+    assert not allclose(kendall_tau_distance(y, x), torch.zeros(10))
+    assert isinstance(kendall_tau_distance(y, y), torch.Tensor)
+
+    # Now do the same tests with the parallel implementation 
+    assert allclose(kendall_tau_distance_parallel(y, y), torch.zeros(10))
+    assert not allclose(kendall_tau_distance_parallel(y, x), torch.zeros(10))
+    assert isinstance(kendall_tau_distance_parallel(y, y), torch.Tensor)
+
+    # Make sure that the output of the two implementations is the same
+    assert allclose(kendall_tau_distance(x, y), kendall_tau_distance_parallel(x, y))
+
+    # Now use perf_counter to compare the speed of the two implementations
+    # Do this for 20 iterations so that the difference is meaningful.
+    num_iters = 20
+    times_sequential = []
+    times_parallel = []
+    for _ in range(num_iters):
+        x = torch.randint(0, 10, (100, 100))
+        y = torch.sort(x, dim=1)[0]
+        start = perf_counter()
+        kendall_tau_distance(y, y)
+        end = perf_counter()
+        time_sequential = end - start
+        times_sequential.append(time_sequential)
+
+        start = perf_counter()
+        kendall_tau_distance_parallel(y, y)
+        end = perf_counter()
+        time_parallel = end - start
+        times_parallel.append(time_parallel)
+
+    # Check that the parallel implementation is faster
+    assert sum(times_sequential) > sum(times_parallel)
+    
+
+def mixed_loss_fn(
+        y_true: torch.Tensor, 
+        y_pred: torch.Tensor,
+        regression_loss: nn.Module, 
+        permutation_loss_weight: float, 
+) -> torch.Tensor:
+    """Compute the loss of the model."""
+    regression_loss = regression_loss(y_true, y_pred)
+    permutation_loss = kendall_tau_distance_parallel(y_true, y_pred)
+    loss = regression_loss + permutation_loss_weight * permutation_loss
+    return loss
+
+
 def validate(
     model: SortNet, 
     niter: int, 
@@ -332,6 +405,11 @@ def train_loop(hparams: argparse.Namespace) -> None:
 
     # Create a loss function
     loss_fn = nn.MSELoss() if hparams.loss == "mse" else nn.L1Loss()
+    loss_fn = (
+        functools.partial(mixed_loss_fn, regression_loss=loss_fn, permutation_loss_weight=0.5) 
+        if hparams.use_mixed_loss 
+        else loss_fn
+    )
 
     # Create an optimizer
     wdm = hparams.weight_decay_multiple
@@ -397,8 +475,8 @@ def train_loop(hparams: argparse.Namespace) -> None:
         # Print the loss
         if epoch % 10 == 0:
             rich.print(
-                f"Epoch {epoch} | Train-loss: {loss.item():.2f} | "
-                f"ID-loss: {val_loss_id:.2f} | OOD-loss: {val_loss_ood:.2f}"
+                f"Epoch {epoch} | Train-loss: {loss.item():.0f} | "
+                f"ID-loss: {val_loss_id:.0f} | OOD-loss: {val_loss_ood:.2f}"
                 f"ID-acc: {val_acc_id:.2f} | OOD-acc: {val_acc_ood:.2f}"
             )
 
@@ -430,9 +508,7 @@ def check_results(sortnet: SortNet, hparams: argparse.Namespace) -> None:
 
 def run_tests() -> None:
     """Run all tests."""
-    test_adaptedlayernorm()
-    test_attentionblock()
-    test_mlp()
+    test_kendaltau()
     print("All tests passed.")
 
 def get_hparams() -> argparse.Namespace:
@@ -461,6 +537,10 @@ def get_hparams() -> argparse.Namespace:
     parser.add_argument("--num_cycles", type=int, default=1, help="Number of cycles for the scheduler")
 
     parser.add_argument("--loss", type=str, default="mse", choices=["mse", "l1"], help="The loss function to use")
+    parser.add_argument(
+        "--use_mixed_loss", action="store_true", 
+        help="Use a mixed loss function, consisting of a regression loss and a permutation loss. "
+    )
     parser.add_argument(
         "--weight_decay_multiple", default=0.03, 
         help="Weight decay multiple. "
